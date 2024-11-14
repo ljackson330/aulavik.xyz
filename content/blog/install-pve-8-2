@@ -1,0 +1,113 @@
+---
+title: Installing Proxmox VE 8.2
+description: (Re)installing Proxmox VE 8.2 on my homelab.
+date: 2024-11-13
+tags:
+---
+
+I've been running a hodgepodge little Proxmox 7.2 host for several years now and have been more or less hands-free about the actual management of it. I also set some pretty poor standards when configuring it the first time, some of which would have been pretty hard to fix in-place, so I put off doing any of that until now. I've now fully wiped and re-installed Proxmox 8.2.7 on my host, with a number of changes compared to my previous configuration that I'm much happier with, and this is a basic log of how I did it.
+Prerequisites
+
+Since I'm essentially re-installing, it was important for me to take inventory of what workloads I was running (and honestly, what workloads I wasn't running) before starting on anything else. I found a number of containers I had previously set up were no longer needed, and the rest were backed up to an SMB share I set up on my desktop. I tested restoring a few of them, and was pleasantly surprised to see how fast Proxmox restores are, and how seamless it all was. Simply being able to import containers from their .zstd backup dumps is pretty nifty.
+
+## Installation
+
+### Bootable Media
+
+The first step is to create bootable installation media, flashed with the Proxmox installer. I usually use Ventoy, but I don't know where that USB went, and I got lazy and just dd'd a random USB I had sitting around.
+
+Replace /dev/sdx with the appropriate device name.
+
+```
+sudo dd bs=1M conv=fdatasync if=proxmox-ve_8.2-2.iso of=/dev/sdx
+```
+
+### Installation Wizard
+
+With our installation prepped, boot into it. The installation process itself is quite straightforward, and I'm not going to walk through accepting license agreements and setting locale details. The only thing I want to talk about is setting up ZFS with a mirror pool for the root Proxmox install.
+
+This is still very straight forward - select zfs (RAID1) as the filesystem, and ensure only the desired disks (in my case, two 500 GB NVMe SSDs) are selected. This is very important to get right, as Proxmox will wipe these drives. In my case, I had four 8 TB HDDs plugged in at the time, so I really wanted to make sure those weren't included. More on those later.
+
+Once you've gone through the wizard, reboot the host and access your fancy new web interface.
+
+## Post-install
+
+### Importing extant zpool
+
+The first thing I wanted to get sorted was re-importing my data zpool. I have four 8 TB HGST hard drives set up in a mirror pool (two per mirror for a total of 16 TB usable) which hold a lot of important data. I do not have much experience manually tinkering with ZFS zpools - for the most part it's been completely plug'n'play for me, so I was a bit apprehensive until I'd gotten this sorted. However, it turns out that it's stupid simple.
+
+1. Import the pool manually
+
+```
+zpool import tank
+```
+
+This makes it accessible to your Proxmox host.
+
+2. Add it to the PVE storage config
+
+```
+vim /etc/pve/storage.cfg
+```
+
+Insert the following, below what's already in there:
+
+```
+zfspool: tank
+        pool tank
+        content images,rootdir
+```
+
+This will make it visible in the web GUI.
+
+Now that our zpool is imported and mounted (feels like magic, no?), there are a few more bits to take care of before we start importing our workloads.
+
+### PVE Post-Install Script
+
+First, let's run the awesome Proxmox VE Post Install script. This will do a number of things for us, and we'll largely want to stick with the defaults. The only change I went with was to not enable the pvetest repository. Do with that what you will.
+
+### Creating a new user
+
+Next, we're going to create a user in the pve realm and grant it PVEAdmin role.
+
+1. Navigate to the root Datacenter in the left-hand nav window
+2. Click on Users
+3. Click on Add
+4. Select pve for the desired realm
+5. Input username/password
+
+Now that we have nice user, we're going to give it a role.
+
+1. Navigate to the root Datacenter
+2. Click on Permissions
+3. Click Add
+4. Path: /
+5. User: {user}@pve
+6. Role: PVEAdmin
+
+Our user now has permissions to do pretty much everything except alter hardware-level configuration on the node and permissions structures. Let's add 2FA now (do this for the root user too). I'm using TOTP because I'm too broke for a Yubikey.
+
+### Two Factor Authentication
+
+1. Navigate to the root Datacenter
+2. Click Two Factor
+4. Click Add
+5. Click TOTP
+6. Do the needful. Scan it in a TOTP vault (I use Aegis)
+
+Hooray - we're now somewhat secure. Hint: you might want to add a Linux user within your node, too.
+
+One last step before we can start standing up our workloads again.
+
+### Accessing an SMB share
+
+Accessing the SMB share holding our container backups is very simple.
+
+1. Navigate to the root Datacenter
+2. Click on Storage
+3. Click on Add
+4. Click on SMB/CIFS
+
+Enter the ID (human-friendly name), username/password, and share address. Select VZDump backup file for Content.
+
+Now it should be accessible within your web GUI, and we can start importing workloads again.
